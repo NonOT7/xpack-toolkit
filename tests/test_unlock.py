@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,26 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 UNLOCK = ROOT / "unlock.sh"
+
+REAL_ID = shutil.which("id") or "/usr/bin/id"
+
+
+def fake_root_path(tmp, real_path=None):
+    """把 `id -u` 伪装成 0，让 unlock.sh 的 root 门禁在非 root 环境（CI runner）里也能跑通。
+
+    生产脚本不改：门禁仍按真实 `id -u` 判断；这里只给测试子进程前置一个 stub，
+    其它参数（`id -un` 等）原样透传给系统 id。
+    """
+    bin_dir = os.path.join(tmp, "fakebin")
+    os.makedirs(bin_dir, exist_ok=True)
+    stub = Path(bin_dir, "id")
+    stub.write_text(
+        "#!/bin/sh\n"
+        "# 测试桩：unlock.sh 只凭 `id -u` 判定 root\n"
+        "case \"$1\" in -u|--user) echo 0 ;; *) exec %s \"$@\" ;; esac\n" % REAL_ID
+    )
+    os.chmod(stub, 0o755)
+    return bin_dir + ":" + (real_path if real_path is not None else os.environ["PATH"])
 
 
 def version_key(value):
@@ -290,9 +311,14 @@ class RestoreTests(unittest.TestCase):
                 Path(backup, name).write_text(payload)
             core = os.path.join(tmp, "core")
             Path(core).write_text("CRACKED")
+            os.makedirs(tmp + "/bin")
+            Path(tmp, "bin", "systemctl").write_text("#!/bin/sh\nexit 0\n")
+            os.chmod(tmp + "/bin/systemctl", 0o755)
             env = os.environ.copy()
+            # restore 分支在 root 门禁之后才会读这些覆盖变量；CI runner 不是 root，
+            # 这里用 fake `id` 桩模拟 root，否则脚本会以 "!! Run as root" 提前退出。
             env.update({
-                "PATH": tmp + "/bin:" + env["PATH"],
+                "PATH": tmp + "/bin:" + fake_root_path(tmp, env["PATH"]),
                 "PANEL_ROOT": tmp, "PANEL_CTL": os.path.join(tmp, "1pctl"),
                 "CORE_BIN": core, "AGENT_BIN": os.path.join(tmp, "agent"),
                 "CORE_SVC": "xpack-test", "AGENT_SVC": "xpack-test-agent",
@@ -300,9 +326,6 @@ class RestoreTests(unittest.TestCase):
                 "XPACK_DB": os.path.join(tmp, "xpack.db"),
                 "SERIAL_PATH": os.path.join(tmp, "serial"),
             })
-            os.makedirs(tmp + "/bin")
-            Path(tmp, "bin", "systemctl").write_text("#!/bin/sh\nexit 0\n")
-            os.chmod(tmp + "/bin/systemctl", 0o755)
             run = subprocess.run(["bash", str(UNLOCK), "restore", "--no-progress"],
                                  capture_output=True, text=True, env=env, timeout=120)
             self.assertEqual(run.returncode, 0, run.stderr)
@@ -347,11 +370,11 @@ class ScriptStartupTests(unittest.TestCase):
                      'PANEL_CTL="${PANEL_CTL:-/usr/local/bin/1pctl}"'):
             self.assertIn(line, script)
 
-    @unittest.skipUnless(os.geteuid() == 0, "需要在 root 下执行脚本")
     def test_fake_env_fails_on_version_detection_not_unbound_variable(self):
         with tempfile.TemporaryDirectory() as tmp:
             environment = os.environ.copy()
             environment.update({
+                "PATH": fake_root_path(tmp),
                 "PANEL_ROOT": tmp, "CORE_BIN": tmp + "/core", "AGENT_BIN": tmp + "/agent",
                 "BACKUP": tmp + "/backup", "UNLOCK_WORK": tmp + "/unlock",
                 "PANEL_CTL": tmp + "/1pctl",
