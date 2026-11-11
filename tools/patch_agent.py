@@ -71,6 +71,11 @@ ENTRY_STUBS = {
 
 # 代码模式补丁：(名称, 所在函数符号后缀, 原始字节, 补丁字节, 说明)
 # 等长覆盖；arm64 改条件分支只需换一条指令，所以 A2/A7 也放在这里。
+#
+# 原始字节可以写成候选列表 ((orig, patch), ...)：官方换编译器版本后，同一段逻辑
+# 会落到不同寄存器上（v2.5.0 把 A4 的 movzbl 0x98(%rdx) 换成了 0x98(%rax)，
+# memcpy 的入口寄存器从 rdx 挪到了 rax）。候选按顺序尝试，命中唯一者胜出，
+# 这样「同一份表」能同时适配 v2.4.x 和 v2.5.0，不用按版本分叉。
 PATTERN_SITES = {
     "amd64": [
         ("A3.initXpack.log_true", "xpack.initXpack",
@@ -78,8 +83,11 @@ PATTERN_SITES = {
          bytes.fromhex("41ba0100000090904c8d1d"),
          "日志行读取 isXpack=true"),
         ("A4.initXpack.store_true", "xpack.initXpack",
-         bytes.fromhex("0fb692980000008815"),
-         bytes.fromhex("ba0100000090908815"),
+         ((bytes.fromhex("0fb692980000008815"),       # <= v2.4.x：值在 rdx
+           bytes.fromhex("ba0100000090908815")),
+          (bytes.fromhex("0fb680980000008805"),       # >= v2.5.0：值在 rax
+           bytes.fromhex("b80100000090908805"))),
+         None,
          "isXpack 全局 <- 1"),
         ("A5.InitLicenseInfo.store_true", "common_xpack.InitLicenseInfo",
          bytes.fromhex("0fb680980000008805"),
@@ -95,10 +103,12 @@ PATTERN_SITES = {
 
 # 需要「先锚定比较指令，再改它后面的条件跳转」的站点：
 # 只有 amd64 需要（短/长两种跳转编码 + 位移字节会变），arm64 一条指令即可。
+# 锚点同样可以给多个候选：v2.4.x 是 cmpb $0x0,0x98(%rdx)，v2.5.0 变成 0x98(%rax)。
 BRANCH_SITES = {
     "amd64": [
         ("A2.initXpack.drop_guard", "xpack.initXpack",
-         bytes.fromhex("80ba9800000000"),          # cmpb $0x0, 0x98(%rdx)
+         (bytes.fromhex("80ba9800000000"),          # <= v2.4.x：cmpb $0x0, 0x98(%rdx)
+          bytes.fromhex("80b89800000000")),         # >= v2.5.0：cmpb $0x0, 0x98(%rax)
          "xpack.initXpack: 永不跳过 X-Pack 初始化块", True),
     ],
     "arm64": [],
@@ -359,19 +369,34 @@ def _find_one(data, lo, hi, pattern, label):
     return hits[0]
 
 
+def _variants(orig, patch):
+    """把 (orig, patch) 或 ((orig, patch), ...) 统一成候选列表。"""
+    if isinstance(orig, (tuple, list)) and orig and isinstance(orig[0], (tuple, list)):
+        return [(bytes(item[0]), bytes(item[1])) for item in orig]
+    return [(bytes(orig), bytes(patch))]
+
+
 def _site(data, syms, name, suffix, orig, patch, note):
-    """在函数字节范围内唯一定位 orig（或已打的 patch），返回补丁站点。"""
+    """在函数字节范围内唯一定位 orig（或已打的 patch），返回补丁站点。
+
+    orig 可以是多组候选（见 PATTERN_SITES 注释）：逐个候选试 original / patched，
+    唯一命中者胜出；任何一个候选出现多处命中都视为定位失败（宁可报错也不误改）。
+    """
     sym = _func(syms, suffix)
     lo, hi = sym["off"], sym["off"] + sym["size"]
-    for pattern, state in ((orig, "original"), (patch, "patched")):
-        hits = _find_all(data, lo, hi, pattern)
-        if len(hits) == 1:
-            return (name, hits[0], pattern, patch, state, note)
-        if len(hits) > 1:
-            raise ValueError("expected exactly one %s in %s, got %d"
-                             % (name, suffix, len(hits)))
-    raise ValueError("pattern for %s not found in %s (neither original nor patched)"
-                     % (name, suffix))
+    ambiguous = []
+    for variant_orig, variant_patch in _variants(orig, patch):
+        for pattern, state in ((variant_orig, "original"), (variant_patch, "patched")):
+            hits = _find_all(data, lo, hi, pattern)
+            if len(hits) == 1:
+                return (name, hits[0], pattern, variant_patch, state, note)
+            if len(hits) > 1:
+                ambiguous.append("%s (0x%x hits)" % (pattern.hex(), len(hits)))
+    if ambiguous:
+        raise ValueError("expected exactly one %s in %s, got multiple: %s"
+                         % (name, suffix, ", ".join(ambiguous)))
+    raise ValueError("pattern for %s not found in %s (neither original nor patched, %d variants)"
+                     % (name, suffix, len(_variants(orig, patch))))
 
 
 def state_of(data, off, patch, orig=None):
@@ -393,12 +418,30 @@ def _entry(data, syms, name, suffix, stub, note):
 
 
 def _branch(data, syms, name, suffix, anchor, note, allow_long=True):
-    """锚定比较指令 → 找后面的条件跳转（或已抹平的 NOP）→ 返回补丁站点。"""
+    """锚定比较指令 → 找后面的条件跳转（或已抹平的 NOP）→ 返回补丁站点。
+
+    anchor 可以给多个候选（版本间寄存器分配会变），要求候选里恰好一个能唯一定位。
+    """
     sym = _func(syms, suffix)
     lo, hi = sym["off"], sym["off"] + sym["size"]
-    start = _find_one(data, lo, hi, anchor, "anchor for %s in %s" % (name, suffix))
-    lookup = start + len(anchor)
-    window = range(lookup, min(lookup + 8, hi))
+    candidates = anchor if isinstance(anchor, (tuple, list)) and anchor \
+        and isinstance(anchor[0], (bytes, bytearray)) else (anchor,)
+    start = length = None
+    diagnostics = []
+    for candidate in candidates:
+        candidate = bytes(candidate)
+        hits = _find_all(data, lo, hi, candidate)
+        diagnostics.append("0x%s:%d" % (candidate.hex(), len(hits)))
+        if len(hits) == 1:
+            if start is not None:
+                # 两代锚点同时命中说明形状变了，宁可不打也不要挑一个猜
+                raise ValueError("ambiguous anchor for %s in %s (candidates %s)"
+                                 % (name, suffix, ", ".join(diagnostics)))
+            start, length = hits[0], len(candidate)
+    if start is None:
+        raise ValueError("anchor for %s in %s is not unique (candidates %s)"
+                         % (name, suffix, ", ".join(diagnostics)))
+    window = range(start + length, min(start + length + 8, hi))
 
     # 官方原样：长跳转优先，其次短跳转；已打过补丁：等长 NOP 序列。
     probes = []

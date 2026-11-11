@@ -46,8 +46,73 @@ class MachineTest(unittest.TestCase):
         self.assertEqual(len(set(derived)), 6)
 
 
-V232 = ROOT / "build/release-v2.3.2"
+A4_ROW = next(row for row in agent.PATTERN_SITES["amd64"]
+              if row[0] == "A4.initXpack.store_true")
+A2_ROW = next(row for row in agent.BRANCH_SITES["amd64"]
+              if row[0] == "A2.initXpack.drop_guard")
 
+
+def one_symbol(name, size):
+    return [{"name": name, "off": 0, "size": size, "entry": 0, "vaddr": 0}]
+
+
+class StoreVariantTest(unittest.TestCase):
+    """v2.5.0 把 A4 的取值寄存器从 rdx 换成 rax：同一份模式表要能命中两代代码。"""
+
+    def locate(self, body):
+        name, suffix, orig, patch, note = A4_ROW
+        return agent._site(body, one_symbol(suffix, len(body)),
+                           name, suffix, orig, patch, note)
+
+    def test_matches_both_register_allocations(self):
+        cases = (
+            ("0fb692980000008815", "ba0100000090908815"),   # <= v2.4.x, rdx
+            ("0fb680980000008805", "b80100000090908805"),   # >= v2.5.0, rax
+        )
+        for head, want_patch in cases:
+            body = b"\x90" * 16 + bytes.fromhex(head) + b"\x90" * 8
+            row = self.locate(body)
+            self.assertEqual(row[1], 16)
+            # 补丁字节必须跟着命中的候选走，不能把 rdx 版补丁打到 rax 版上
+            self.assertEqual(row[3], bytes.fromhex(want_patch))
+            self.assertEqual(row[4], "original")
+
+    def test_second_run_reports_patched(self):
+        body = b"\x90" * 16 + bytes.fromhex("b80100000090908805") + b"\x90" * 8
+        self.assertEqual(self.locate(body)[4], "patched")
+
+    def test_unknown_shape_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.locate(b"\x90" * 32)
+
+
+class GuardAnchorVariantTest(unittest.TestCase):
+    """A2 的锚点按版本换寄存器：cmpb $0,0x98(%rdx) / cmpb $0,0x98(%rax)。"""
+
+    def locate(self, body):
+        name, suffix, anchor, note, allow_long = A2_ROW
+        return agent._branch(body, one_symbol(suffix, len(body)), name, suffix,
+                             anchor, note, allow_long=allow_long)
+
+    def test_both_anchors_drop_the_same_je(self):
+        for anchor in ("80ba9800000000", "80b89800000000"):
+            body = b"\x90" * 8 + bytes.fromhex(anchor) + bytes.fromhex("0f84b3000000") + b"\x90" * 8
+            row = self.locate(body)
+            self.assertEqual(row[1], 8 + 7)
+            self.assertEqual(row[3], bytes.fromhex("909090909090"))
+            self.assertEqual(row[4], "original")
+
+    def test_already_noped_branch_reports_patched(self):
+        body = (b"\x90" * 8 + bytes.fromhex("80b89800000000")
+                + bytes.fromhex("909090909090") + b"\x90" * 8)
+        self.assertEqual(self.locate(body)[4], "patched")
+
+    def test_missing_anchor_is_an_error(self):
+        with self.assertRaises(ValueError):
+            self.locate(b"\x90" * 32)
+
+
+V232 = ROOT / "build/release-v2.3.2"
 
 V241 = ROOT / "build/release-v2.4.1"
 

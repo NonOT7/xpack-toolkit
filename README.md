@@ -145,7 +145,9 @@ sudo bash unlock.sh install --keep-backup      # 保留旧二进制，restore �
 | A7 | `app/service.syncNodeInfo` 分支 | 恒走 InitXpack，永不 ResetXpack（**可选**：v2.4.1 起守卫直接判 A6 改写的那条读指令，改完即生效，找不到就不打） |
 | A8 | `alert_xpack.GetLicenseAlert` | 入口返回 nil，不再弹授权告警 |
 
-arm64 不写死指令偏移，改成结构化解码：先从 `IsXpack()` 里解出 `isXpack` 全局字节的地址（`adrp` + `ldrb` 的页 + 页内偏移），再在 `initXpack` / `InitLicenseInfo` / `syncNodeInfo` 里找写这个地址的 `strb`，回溯出 `edition` 字段的读法，最后把这几处 `ldrb` 全换成 `mov wN,#1`（入口另加两个返回桩）。因为地址和字段都是现场解出来的，v2.3.x 和 v2.4.x 共用同一份代码，上游再发新版也不用来回改表。
+arm64 不写死指令偏移，改成结构化解码：先从 `IsXpack()` 里解出 `isXpack` 全局字节的地址（`adrp` + `ldrb` 的页 + 页内偏移），再在 `initXpack` / `InitLicenseInfo` / `syncNodeInfo` 里找写这个地址的 `strb`，回溯出 `edition` 字段的读法，最后把这几处 `ldrb` 全换成 `mov wN,#1`（入口另加两个返回桩）。因为地址和字段都是现场解出来的，v2.3.x、v2.4.x、v2.5.0 共用同一份代码，上游再发新版也不用来回改表。
+
+amd64 的代码模式表允许一个站点挂多组候选 `((orig, patch), ...)`：官方换编译器后同一段逻辑可能落到别的寄存器上（v2.5.0 就把 A2/A4 的 `rdx` 换成了 `rax`），候选按顺序试、唯一命中者胜出，补丁字节跟着命中的那组候选走，所以同一份表能同时适配 v2.4.x 与 v2.5.0，不需要按版本分叉。
 
 校验已经打过补丁的 Agent 时要带 `--orig` 指向官方原件：入口桩打完之后 `IsXpack()` 里已经没有 `adrp`/`ldrb` 可解，需要拿原件推站点偏移。
 
@@ -160,6 +162,15 @@ arm64 不写死指令偏移，改成结构化解码：先从 `IsXpack()` 里解�
 | 授权接口 | `/api/v2/core/enterprise/*` 消失，统一到 `/api/v2/core/licenses/*` | 冒烟测试改打 `/licenses/master/status`、`/licenses/search`、`/xpack/nodes/search` |
 | 登录协议 | `POST /api/v2/core/auth/login`，口令为 `b64(RSA(aeskey)):b64(iv):b64(AES-CBC(pwd))` 三段式，进户口令必须走 `EntranceCode` 头（JSON 字段被忽略） | `smoke_test.py` 内置这套加密，首次登录无验证码可直接自动化 |
 | 证书校验 | 官方内核在 `POST /licenses/upload` 处直接 `verify certificate failed` | 破解内核越过该校验；生产安装仍走「写库 + 绑定」路径，不依赖 upload 的三段式格式 |
+
+### 版本差异（v2.4.x → v2.5.0）
+
+| 项目 | 变化 | 对破解流程的影响 |
+| --- | --- | --- |
+| 内核门控 | C1–C8 八个符号名与函数体形状不变；v2.5.0 内核 8 个站点全部 `--verify` 直接命中 | 内核侧零改动 |
+| Agent `isXpack` 布局 | `xpack/utils/edition` 结构体里 `isXpack` 仍在 `+0x98`，3 写 7 读的关系不变 | 站点数量不变，仍靠符号 + 代码模式定位 |
+| Agent 寄存器分配 | `initXpack` 里取值寄存器从 `rdx` 换成 `rax`：`movzbl 0x98(%rdx)` → `movzbl 0x98(%rax)`（A4 写入点）、`cmpb $0,0x98(%rdx)` → `cmpb $0,0x98(%rax)`（A2 守卫锚点） | 表里给 A2/A4 各挂 `rdx`、`rax` 两组候选，按顺序匹配，两个版本共用一份代码 |
+| Agent 守卫形态 | v2.5.0 的 A7 不再有独立分支（条件跳转在 A6 那条读指令之后 16 字节内），`A7_ANCHOR` 落空 | 走「找不到就不打」的可选路径，最终站点数 amd64 8 个、arm64 7 个 |
 
 ## 发布架构
 
