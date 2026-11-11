@@ -35,7 +35,18 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 | 你在**自己的 fork** 里跑 Actions 发出 `core-vX.Y.Z` | 产物只落在**你自己的 Releases**，上游脚本不会去拉 |
 | 你 `curl` **自己的** raw 地址 | 自动推断出 `你的用户名/xpack-toolkit`，全程用自己的 Release、自己的 `sqlite3mini` |
 
+> **README 不会跟着 fork 自动改名。** fork 出来的仓库里，上面那两条安装命令仍然写着 `keweiya/xpack-toolkit`——照着 README 敲的人，用的还是上游产物。脚本的自动推断只在「你敲的地址属于你自己」时才生效，所以 fork 后第一件事是把 README 里的地址换掉。
+
 在自己 fork 里发一版：
+
+0. 先把 README 里的上游地址换成自己（全文只有 `keweiya/xpack-toolkit` 这几处）：
+
+```bash
+grep -rn "keweiya/xpack-toolkit" README.md
+sed -i "s#keweiya/xpack-toolkit#<你的用户名>/xpack-toolkit#g" README.md
+```
+
+   也可以顺手把 `unlock.sh` 里的 `REPO_DEFAULT` 改成自己的（可选；改完之后即使脚本先存成文件再跑、拿不到 `curl` 命令行，也默认指向你自己，抓取地址推断依旧优先生效）。
 
 1. fork 后在 **Actions** 页点「I understand my workflows, go ahead and enable them」（fork 默认禁用工作流）；
 2. **Scheduled workflows 在 fork 里默认不启用**，要自动跟上游就走手动 `workflow_dispatch`；

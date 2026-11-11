@@ -150,6 +150,25 @@ class RepoInferenceTests(unittest.TestCase):
         self.assertEqual(self.pick("keweiya/xpack-toolkit"), "keweiya/xpack-toolkit")
 
 
+class ReadmeConsistencyTests(unittest.TestCase):
+    """README 顶部的安装命令必须和 unlock.sh 的 REPO_DEFAULT 指向同一个仓库。
+
+    GitHub 不会重写 fork 里的 README：改了 REPO_DEFAULT 却没改 README（或反过来），
+    用户照着 README 敲命令就会装到上游产物。让这种不一致直接变红。
+    """
+
+    def test_install_commands_point_at_same_repo_as_default(self):
+        repo = re.search(r'^REPO_DEFAULT="([^"]+)"', UNLOCK.read_text(), re.M).group(1)
+        readme = (ROOT / "README.md").read_text()
+        urls = [url for url in re.findall(r"curl -fsSL (\S+unlock\.sh) \| sudo bash", readme)
+                if "<" not in url]          # 跳过 fork 章节里的 <你的用户名> 占位符
+        self.assertTrue(urls, "README 里找不到一键安装命令")
+        for url in urls:
+            self.assertIn(repo, url,
+                          "README 的安装命令指向 %s，但 REPO_DEFAULT 是 %s；fork 后请同步改 README"
+                          % (url, repo))
+
+
 class ReleaseSelectionTests(unittest.TestCase):
     """select_release 现在是 shell 实现：API 与 atom 两种来源都要能选出最高稳定版并拼出资产 URL。"""
 
