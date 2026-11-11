@@ -23,6 +23,40 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 - 先存成文件再跑（没有 curl 命令行可读）→ 走「官方直连」那一支
 - 需要强制加速：`GH_MIRROR_FORCE=1 sudo -E bash unlock.sh install`；要换前缀：`GH_MIRROR=https://…/`
 
+**Release 来源仓库由同一条命令决定**：脚本从 `curl` 命令行里的 `unlock.sh` 地址反推 `OWNER/REPO`，所以 `curl <自己的 raw 地址> | sudo bash` 用的就是**自己仓库的 Release**。抓上游地址则继续跟上游，与改动前一致。
+
+## Fork 之后怎么用
+
+一键脚本**不要写死仓库名**，也不要指望 fork 出来的 Release 会自动被别人的命令用上：
+
+| 场景 | 行为 |
+| --- | --- |
+| 别人 `curl` 你的上游地址 | 用**上游**的 Release（`REPO_DEFAULT`）+ 上游的构建产物 |
+| 你在**自己的 fork** 里跑 Actions 发出 `core-vX.Y.Z` | 产物只落在**你自己的 Releases**，上游脚本不会去拉 |
+| 你 `curl` **自己的** raw 地址 | 自动推断出 `你的用户名/xpack-toolkit`，全程用自己的 Release、自己的 `sqlite3mini` |
+
+在自己 fork 里发一版：
+
+1. fork 后在 **Actions** 页点「I understand my workflows, go ahead and enable them」（fork 默认禁用工作流）；
+2. **Scheduled workflows 在 fork 里默认不启用**，要自动跟上游就走手动 `workflow_dispatch`；
+3. `upstream-watch` → `build.yml` 全绿后，Release 发到 `你的用户名/xpack-toolkit`（`build.yml` 里用 `$GITHUB_REPOSITORY`，不需要改代码、不需要配 secret）；
+4. 装机器上执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<你的用户名>/xpack-toolkit/main/unlock.sh | sudo bash
+```
+
+显式指定来源（先存文件再跑、或想临时切仓库时用）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<你的用户名>/xpack-toolkit/main/unlock.sh -o unlock.sh
+sudo env REPO=<你的用户名>/xpack-toolkit bash unlock.sh install
+```
+
+> `sudo REPO=... bash` 不成立：sudo 不解析 `VAR=value` 形式的环境变量，要用 `sudo env VAR=value bash` 或先 `export` 再 `sudo -E bash`。
+
+自建 Release 必须与上游**同名同结构**才能被脚本识别：tag 形如 `core-vX.Y.Z`，资产含 `manifest.json`、`core-linux-<arch>`、`core-linux-<arch>.orig`，有 `agent-linux-<arch>` 才会替换 Agent——这些都由 `build.yml` 自动产出。
+
 ## 运行依赖
 
 目标机只需要 `bash` + coreutils + `openssl`（1Panel 宿主机默认都有）：**不装 python，也不需要装 sqlite3**。

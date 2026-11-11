@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -98,6 +99,55 @@ def shell_function(name):
 def run_shell(functions, body, timeout=60):
     script = "set -uo pipefail\n" + "\n".join(functions) + "\n" + body
     return subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=timeout)
+
+
+class RepoInferenceTests(unittest.TestCase):
+    """fork 之后 `curl <自己的 raw 地址> | sudo bash` 必须用自己的 Release，而不是上游的。"""
+
+    def infer(self, url):
+        body = 'repo_from_url %s' % shlex.quote(url)
+        result = run_shell([shell_function("repo_from_url")], body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_raw_githubusercontent_url(self):
+        self.assertEqual(
+            self.infer("https://raw.githubusercontent.com/alice/xpack-toolkit/main/unlock.sh"),
+            "alice/xpack-toolkit")
+
+    def test_mirror_prefixed_url_with_cache_buster(self):
+        self.assertEqual(
+            self.infer("https://ghfast.top/https://raw.githubusercontent.com/bob/fork/master/unlock.sh?v=1"),
+            "bob/fork")
+
+    def test_blob_url(self):
+        self.assertEqual(
+            self.infer("https://github.com/carol/xpack-toolkit/blob/main/unlock.sh"),
+            "carol/xpack-toolkit")
+
+    def test_foreign_host_and_other_file_yield_nothing(self):
+        for url in ("https://example.com/unlock.sh",
+                    "https://raw.githubusercontent.com/alice/xpack-toolkit/main/other.sh"):
+            self.assertEqual(self.infer(url), "", url)
+
+    def pick(self, repo, explicit="", bootstrap=""):
+        body = ("REPO_DEFAULT=keweiya/xpack-toolkit\n"
+                "REPO=%s\nREPO_EXPLICIT=%s\nBOOTSTRAP_REPO=%s\npick_repo\n"
+                % (shlex.quote(repo), shlex.quote(explicit), shlex.quote(bootstrap)))
+        result = run_shell([shell_function("pick_repo")], body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def test_explicit_repo_beats_detection(self):
+        self.assertEqual(
+            self.pick("dave/mine", explicit="1", bootstrap="alice/xpack-toolkit"), "dave/mine")
+
+    def test_bootstrap_url_beats_upstream_default(self):
+        self.assertEqual(
+            self.pick("keweiya/xpack-toolkit", bootstrap="alice/xpack-toolkit"), "alice/xpack-toolkit")
+
+    def test_no_signal_falls_back_to_upstream(self):
+        self.assertEqual(self.pick("keweiya/xpack-toolkit"), "keweiya/xpack-toolkit")
 
 
 class ReleaseSelectionTests(unittest.TestCase):

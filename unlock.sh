@@ -16,7 +16,12 @@
 # 已有安装直接重跑同一条命令即可，无需手动卸载。
 set -euo pipefail
 umask 077
-REPO="${REPO:-keweiya/xpack-toolkit}"
+# Release 来源仓库。默认是上游；fork 之后**不用改这里**——脚本会从自己的抓取地址
+# 反推 OWNER/REPO（`curl <自己的 raw 地址> | bash` 即自动用自己的 Release）。
+# 显式 `REPO=owner/repo` 或 `sudo env REPO=owner/repo bash` 依旧优先。
+REPO_DEFAULT="keweiya/xpack-toolkit"
+REPO_EXPLICIT="${REPO:+1}"
+REPO="${REPO:-$REPO_DEFAULT}"
 
 # 先定义日志/失败出口：下面的 root、架构检查在它们之前就要用。
 log() { printf '== %s\n' "$*"; }
@@ -39,6 +44,21 @@ mirror_prefix_from_url() {
 }
 
 BOOTSTRAP_PREFIX=""
+BOOTSTRAP_REPO=""
+
+# 从脚本抓取地址反推 OWNER/REPO：
+#   https://raw.githubusercontent.com/<owner>/<repo>/<ref>/unlock.sh   -> owner/repo
+#   https://github.com/<owner>/<repo>/blob/<ref>/unlock.sh             -> owner/repo
+# 加速镜像前缀（如 https://ghfast.top/https://raw.githubusercontent.com/...）由
+# 正则里的 `(^|/)` 吸收，不用先剥前缀。
+repo_from_url() {
+  local url="${1%%\?*}" pattern
+  case "$url" in *unlock.sh*) ;; *) return 0 ;; esac
+  pattern='(^|/)(raw\.githubusercontent\.com|github\.com)/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(blob/)?[^/]+/unlock\.sh'
+  [[ "$url" =~ $pattern ]] || return 0
+  printf '%s/%s\n' "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+}
+
 detect_bootstrap_route() {
   local pid comm arg found=""
   for pid in /proc/[0-9]*; do
@@ -55,8 +75,21 @@ detect_bootstrap_route() {
   done
   [ -n "$found" ] || return 0
   BOOTSTRAP_PREFIX="$(mirror_prefix_from_url "$found")"
+  BOOTSTRAP_REPO="$(repo_from_url "$found")"
 }
 detect_bootstrap_route
+# 优先序：显式 REPO > 抓取地址推断出的仓库 > 上游默认。
+# fork 用户抓自己的 raw 地址即用自己的 Release；抓上游地址则与改动前完全一致。
+pick_repo() {
+  if [ -n "${REPO_EXPLICIT:-}" ]; then printf '%s\n' "$REPO"; return 0; fi
+  if [ -n "${BOOTSTRAP_REPO:-}" ]; then printf '%s\n' "$BOOTSTRAP_REPO"; return 0; fi
+  printf '%s\n' "$REPO_DEFAULT"
+}
+DETECTED_REPO="$(pick_repo)"
+if [ "$DETECTED_REPO" != "$REPO" ]; then
+  REPO="$DETECTED_REPO"
+  log "Release source: $REPO (detected from the bootstrap URL)"
+fi
 
 [ "$(id -u)" -eq 0 ] || die "Run as root"
 [ "$(uname -s)" = Linux ] || die "This release provides Linux cores"
