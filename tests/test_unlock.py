@@ -150,6 +150,42 @@ class RepoInferenceTests(unittest.TestCase):
         self.assertEqual(self.pick("keweiya/xpack-toolkit"), "keweiya/xpack-toolkit")
 
 
+class RepoSourceResolutionTests(unittest.TestCase):
+    """resolve_repo_source 要同时定下 REPO 和打印出的依据，四条分支都覆盖。"""
+
+    def resolve(self, repo, explicit="", bootstrap=""):
+        body = ("REPO_DEFAULT=keweiya/xpack-toolkit\n"
+                "REPO=%s\nREPO_EXPLICIT=%s\nBOOTSTRAP_REPO=%s\n"
+                "log(){ printf '== %%s\\n' \"$*\"; }\n"
+                "resolve_repo_source\nprintf 'REPO=%%s\\n' \"$REPO\"\n"
+                % (shlex.quote(repo), shlex.quote(explicit), shlex.quote(bootstrap)))
+        result = run_shell([shell_function("pick_repo"), shell_function("resolve_repo_source")], body)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip().splitlines()
+
+    def test_explicit_repo_wins_and_says_so(self):
+        lines = self.resolve("keweiya/xpack-toolkit", explicit="1", bootstrap="alice/xpack-toolkit")
+        self.assertEqual(lines, ["== Release source: keweiya/xpack-toolkit (from REPO)",
+                                 "REPO=keweiya/xpack-toolkit"])
+
+    def test_bootstrap_url_overrides_the_default(self):
+        lines = self.resolve("keweiya/xpack-toolkit", bootstrap="alice/xpack-toolkit")
+        self.assertEqual(lines, ["== Release source: alice/xpack-toolkit (detected from the bootstrap URL)",
+                                 "REPO=alice/xpack-toolkit"])
+
+    def test_detection_matching_default_is_reported(self):
+        lines = self.resolve("keweiya/xpack-toolkit", bootstrap="keweiya/xpack-toolkit")
+        self.assertEqual(lines, ["== Release source: keweiya/xpack-toolkit"
+                                 " (bootstrap URL matches REPO_DEFAULT)",
+                                 "REPO=keweiya/xpack-toolkit"])
+
+    def test_no_signal_is_announced_not_silent(self):
+        lines = self.resolve("keweiya/xpack-toolkit")
+        self.assertEqual(lines, ["== Release source: keweiya/xpack-toolkit"
+                                 " (REPO_DEFAULT; 拿不到 curl 命令行)",
+                                 "REPO=keweiya/xpack-toolkit"])
+
+
 class BootstrapDetectionTests(unittest.TestCase):
     """`curl … | bash` 里 curl 写完 40 KB 就退出：检测必须在这之前抓到它。
 

@@ -88,19 +88,23 @@ pick_repo() {
   if [ -n "${BOOTSTRAP_REPO:-}" ]; then printf '%s\n' "$BOOTSTRAP_REPO"; return 0; fi
   printf '%s\n' "$REPO_DEFAULT"
 }
-DETECTED_REPO="$(pick_repo)"
-# 把「本次用哪个仓库」无条件打出来。fork 用户看到 keweiya/… 就知道推断没生效，
-# 而不是稀里糊涂装上上游产物（REPO= 或改 REPO_DEFAULT 都能修正）。
-if [ -n "$REPO_EXPLICIT" ]; then
-  log "Release source: $REPO (from REPO)"
-elif [ "$DETECTED_REPO" != "$REPO" ]; then
-  REPO="$DETECTED_REPO"
-  log "Release source: $REPO (detected from the bootstrap URL)"
-elif [ -n "$BOOTSTRAP_REPO" ]; then
-  log "Release source: $REPO (bootstrap URL matches REPO_DEFAULT)"
-else
-  log "Release source: $REPO (REPO_DEFAULT; 拿不到 curl 命令行)"
-fi
+# 把「本次用哪个仓库、依据是什么」无条件打出来：fork 用户看到 keweiya/… 就知道
+# 推断没生效，而不是稀里糊涂装上上游产物（REPO= 或改 REPO_DEFAULT 都能修正）。
+resolve_repo_source() {
+  local detected
+  detected="$(pick_repo)"
+  if [ -n "$REPO_EXPLICIT" ]; then
+    log "Release source: $REPO (from REPO)"
+  elif [ "$detected" != "$REPO" ]; then
+    REPO="$detected"
+    log "Release source: $REPO (detected from the bootstrap URL)"
+  elif [ -n "$BOOTSTRAP_REPO" ]; then
+    log "Release source: $REPO (bootstrap URL matches REPO_DEFAULT)"
+  else
+    log "Release source: $REPO (REPO_DEFAULT; 拿不到 curl 命令行)"
+  fi
+}
+resolve_repo_source
 
 [ "$(id -u)" -eq 0 ] || die "Run as root"
 [ "$(uname -s)" = Linux ] || die "This release provides Linux cores"
