@@ -25,7 +25,9 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 
 **Release 来源仓库由同一条命令决定**：脚本启动时扫 `/proc` 找还在跑的 `curl`，从 `unlock.sh` 地址反推 `OWNER/REPO`，所以 `curl <自己的 raw 地址> | sudo bash` 会优先用**自己仓库的 Release**。
 
-这一步只是**尽力而为**，不能当保证：`curl … | sudo bash` 里 bash 要等 curl 送出第一批字节才开始执行，而 40 KB 脚本一次就写进管道（64 KB 缓冲），curl 紧接着退出——等脚本跑到检测点，进程表里往往已经没有 `curl` 了。实测 `ps` 在扫描时刻看到 0 个 curl。抓不到就回落到 `REPO_DEFAULT`。运行时脚本会打印一行，直接看它就知道用的是谁的：
+要让这个推断成立，脚本本身必须**大于 64 KB**（Linux 管道默认容量）：`curl … | sudo bash` 里 bash 要等 curl 送出第一批字节才开始执行，如果整个脚本能一次塞进管道缓冲，curl 会在脚本刚跑起来时就退出，`/proc` 里再看就只剩 0 个 curl（实测确认）。把文件撑过 64 KB 后，curl 会阻塞在管道上等 bash 读完，检测窗口就稳定存在——`unlock.sh` 末尾那段注释块就是干这个的，**不要删**（`tests/test_unlock.py` 里有下限断言）。
+
+脚本仍会打印一行，直接看它就知道用的是谁的：
 
 ```
 == Release source: NonOT7/xpack-toolkit (detected from the bootstrap URL)   # 抓到了
@@ -33,7 +35,7 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 == Release source: keweiya/xpack-toolkit (REPO_DEFAULT; 拿不到 curl 命令行)  # 回落
 ```
 
-最后一种就是「fork 里有 v2.5.1，却装成上游 v2.5.0」的原因。**fork 必须改 `REPO_DEFAULT`**（见下），推断只当加分项。
+第三种只会出现在「脚本先存成文件再跑」（没有 curl 可读）的情况下，此时用的是 `REPO_DEFAULT`，所以 **fork 仍然要把 `REPO_DEFAULT` 改成自己**（见下）。
 
 ## Fork 之后怎么用
 

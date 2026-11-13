@@ -159,6 +159,14 @@ class BootstrapDetectionTests(unittest.TestCase):
 
     URL = "https://raw.githubusercontent.com/NonOT7/xpack-toolkit/main/unlock.sh"
 
+    def test_script_stays_above_the_pipe_buffer(self):
+        """脚本必须大于 64 KB 管道缓冲，否则 curl 在检测前就退出，抓不到来源仓库。"""
+        size = UNLOCK.stat().st_size
+        self.assertGreater(size, 65536 + 8192 * 2,
+                           "unlock.sh 只剩 %d 字节：小于「管道缓冲 + bash 首读」后，"
+                           "curl 会在仓库检测前退出，fork 会回落到上游仓库；"
+                           "请保留文件末尾的兼容块。" % size)
+
     def test_scan_uses_builtin_read_not_a_cat_fork(self):
         body = shell_function("detect_bootstrap_route")
         for fork in ("$(cat", "`cat"):
