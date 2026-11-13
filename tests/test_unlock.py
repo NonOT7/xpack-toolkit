@@ -150,6 +150,40 @@ class RepoInferenceTests(unittest.TestCase):
         self.assertEqual(self.pick("keweiya/xpack-toolkit"), "keweiya/xpack-toolkit")
 
 
+class BootstrapDetectionTests(unittest.TestCase):
+    """`curl … | bash` 里 curl 写完 40 KB 就退出：检测必须在这之前抓到它。
+
+    历史上这里每个进程都 fork 一个 `cat` 读 comm，整轮扫描 113–226 ms，curl 早就
+    没了，于是静默回落到 REPO_DEFAULT——fork 用户因此一直装到上游产物。
+    """
+
+    URL = "https://raw.githubusercontent.com/NonOT7/xpack-toolkit/main/unlock.sh"
+
+    def test_scan_uses_builtin_read_not_a_cat_fork(self):
+        body = shell_function("detect_bootstrap_route")
+        for fork in ("$(cat", "`cat"):
+            self.assertNotIn(fork, body, "检测函数里仍在校 cat，扫描会慢到抓不到 curl")
+
+    @unittest.skipUnless(Path("/bin/yes").is_file(), "需要 /bin/yes 当替身进程")
+    def test_detects_a_live_crawler(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            crawler = Path(tmp, "curl")          # 用 yes 做替身：comm 会变成 curl
+            crawler.symlink_to("/bin/yes")
+            proc = subprocess.Popen([str(crawler), self.URL],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                body = ('BOOTSTRAP_PREFIX=""; BOOTSTRAP_REPO=""\n'
+                        'detect_bootstrap_route\nprintf "%s\\n" "$BOOTSTRAP_REPO"\n')
+                result = run_shell([shell_function("mirror_prefix_from_url"),
+                                    shell_function("repo_from_url"),
+                                    shell_function("detect_bootstrap_route")], body)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), "NonOT7/xpack-toolkit")
+            finally:
+                proc.kill()
+                proc.wait()
+
+
 class ReadmeConsistencyTests(unittest.TestCase):
     """README 顶部的安装命令必须和 unlock.sh 的 REPO_DEFAULT 指向同一个仓库。
 

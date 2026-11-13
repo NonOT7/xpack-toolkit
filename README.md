@@ -23,7 +23,13 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 - 先存成文件再跑（没有 curl 命令行可读）→ 走「官方直连」那一支
 - 需要强制加速：`GH_MIRROR_FORCE=1 sudo -E bash unlock.sh install`；要换前缀：`GH_MIRROR=https://…/`
 
-**Release 来源仓库由同一条命令决定**：脚本从 `curl` 命令行里的 `unlock.sh` 地址反推 `OWNER/REPO`，所以 `curl <自己的 raw 地址> | sudo bash` 用的就是**自己仓库的 Release**。抓上游地址则继续跟上游，与改动前一致。
+**Release 来源仓库由同一条命令决定**：脚本启动时扫 `/proc` 找还在跑的 `curl`，从 `unlock.sh` 地址反推 `OWNER/REPO`，所以 `curl <自己的 raw 地址> | sudo bash` 用的就是**自己仓库的 Release**。这一步是**尽力而为**：`curl … | sudo bash` 里 curl 写完 40 KB 脚本就退出，窗口只有几十毫秒，抓不到（或脚本是先存成文件再跑的）就回落到 `REPO_DEFAULT`。运行时脚本会打印一行，直接看它就知道用的是谁的：
+
+```
+== Release source: NonOT7/xpack-toolkit (detected from the bootstrap URL)
+== Release source: NonOT7/xpack-toolkit (from REPO)
+== Release source: keweiya/xpack-toolkit (REPO_DEFAULT; 拿不到 curl 命令行)
+```
 
 ## Fork 之后怎么用
 
@@ -39,14 +45,14 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 
 在自己 fork 里发一版：
 
-0. 先把 README 里的上游地址换成自己（全文只有 `keweiya/xpack-toolkit` 这几处）：
+0. 先把 README 和 `unlock.sh` 里的仓库名换成自己（**两处都要改**，`README` 与 `REPO_DEFAULT` 不一致时单测会直接变红）：
 
 ```bash
-grep -rn "keweiya/xpack-toolkit" README.md
-sed -i "s#keweiya/xpack-toolkit#<你的用户名>/xpack-toolkit#g" README.md
+sed -i "s#keweiya/xpack-toolkit#<你的用户名>/xpack-toolkit#g" README.md unlock.sh
+grep -rn "keweiya/xpack-toolkit" README.md unlock.sh   # 应该没有输出
 ```
 
-   也可以顺手把 `unlock.sh` 里的 `REPO_DEFAULT` 改成自己的（可选；改完之后即使脚本先存成文件再跑、拿不到 `curl` 命令行，也默认指向你自己，抓取地址推断依旧优先生效）。
+   `REPO_DEFAULT` 为什么**必改**：地址推断是尽力而为——`curl … | sudo bash` 里 curl 传完就退出，扫不到就回落到 `REPO_DEFAULT`。改成自己的仓库名后，无论推断成功与否都不会装到上游产物；反之只改 README、不改 `REPO_DEFAULT`，一旦推断失败就会静默装成上游版本。
 
 1. fork 后在 **Actions** 页点「I understand my workflows, go ahead and enable them」（fork 默认禁用工作流）；
 2. **Scheduled workflows 在 fork 里默认不启用**，要自动跟上游就走手动 `workflow_dispatch`；

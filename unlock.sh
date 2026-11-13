@@ -61,14 +61,17 @@ repo_from_url() {
 
 detect_bootstrap_route() {
   local pid comm arg found=""
+  # 这段必须够快：`curl … | bash` 里 curl 把 40 KB 脚本写完就退出，扫描一慢
+  # （每个进程 fork 一个 cat，实测 113–226 ms）就永远抓不到它，于是静默回落到
+  # REPO_DEFAULT——fork 用户就是这么拿到上游产物的。全部用内建 read，实测 <10 ms。
   for pid in /proc/[0-9]*; do
     [ "${pid#/proc/}" = "$$" ] && continue
-    comm="$(cat "$pid/comm" 2>/dev/null)" || continue
+    read -r comm < "$pid/comm" 2>/dev/null || continue
     case "$comm" in curl|wget) ;; *) continue ;; esac
     while IFS= read -r -d '' arg; do
       case "$arg" in
         # 允许带 ?v=… 缓存穿透参数：raw.githubusercontent 对分支 URL 有 5 分钟 CDN 缓存。
-        http://*unlock.sh*|https://*unlock.sh*) found="${arg%%\?*}" ;;
+        http://*unlock.sh*|https://*unlock.sh*) found="${arg%%\?*}"; break ;;
       esac
     done < "$pid/cmdline" 2>/dev/null || true
     [ -n "$found" ] && break
@@ -86,9 +89,17 @@ pick_repo() {
   printf '%s\n' "$REPO_DEFAULT"
 }
 DETECTED_REPO="$(pick_repo)"
-if [ "$DETECTED_REPO" != "$REPO" ]; then
+# 把「本次用哪个仓库」无条件打出来。fork 用户看到 keweiya/… 就知道推断没生效，
+# 而不是稀里糊涂装上上游产物（REPO= 或改 REPO_DEFAULT 都能修正）。
+if [ -n "$REPO_EXPLICIT" ]; then
+  log "Release source: $REPO (from REPO)"
+elif [ "$DETECTED_REPO" != "$REPO" ]; then
   REPO="$DETECTED_REPO"
   log "Release source: $REPO (detected from the bootstrap URL)"
+elif [ -n "$BOOTSTRAP_REPO" ]; then
+  log "Release source: $REPO (bootstrap URL matches REPO_DEFAULT)"
+else
+  log "Release source: $REPO (REPO_DEFAULT; 拿不到 curl 命令行)"
 fi
 
 [ "$(id -u)" -eq 0 ] || die "Run as root"
