@@ -66,7 +66,7 @@ detect_bootstrap_route() {
   # REPO_DEFAULT——fork 用户就是这么拿到上游产物的。全部用内建 read，实测 <10 ms。
   for pid in /proc/[0-9]*; do
     [ "${pid#/proc/}" = "$$" ] && continue
-    read -r comm < "$pid/comm" 2>/dev/null || continue
+    { read -r comm < "$pid/comm"; } 2>/dev/null || continue
     case "$comm" in curl|wget) ;; *) continue ;; esac
     while IFS= read -r -d '' arg; do
       case "$arg" in

@@ -23,13 +23,17 @@ curl -fsSL https://ghfast.top/https://raw.githubusercontent.com/keweiya/xpack-to
 - 先存成文件再跑（没有 curl 命令行可读）→ 走「官方直连」那一支
 - 需要强制加速：`GH_MIRROR_FORCE=1 sudo -E bash unlock.sh install`；要换前缀：`GH_MIRROR=https://…/`
 
-**Release 来源仓库由同一条命令决定**：脚本启动时扫 `/proc` 找还在跑的 `curl`，从 `unlock.sh` 地址反推 `OWNER/REPO`，所以 `curl <自己的 raw 地址> | sudo bash` 用的就是**自己仓库的 Release**。这一步是**尽力而为**：`curl … | sudo bash` 里 curl 写完 40 KB 脚本就退出，窗口只有几十毫秒，抓不到（或脚本是先存成文件再跑的）就回落到 `REPO_DEFAULT`。运行时脚本会打印一行，直接看它就知道用的是谁的：
+**Release 来源仓库由同一条命令决定**：脚本启动时扫 `/proc` 找还在跑的 `curl`，从 `unlock.sh` 地址反推 `OWNER/REPO`，所以 `curl <自己的 raw 地址> | sudo bash` 会优先用**自己仓库的 Release**。
+
+这一步只是**尽力而为**，不能当保证：`curl … | sudo bash` 里 bash 要等 curl 送出第一批字节才开始执行，而 40 KB 脚本一次就写进管道（64 KB 缓冲），curl 紧接着退出——等脚本跑到检测点，进程表里往往已经没有 `curl` 了。实测 `ps` 在扫描时刻看到 0 个 curl。抓不到就回落到 `REPO_DEFAULT`。运行时脚本会打印一行，直接看它就知道用的是谁的：
 
 ```
-== Release source: NonOT7/xpack-toolkit (detected from the bootstrap URL)
-== Release source: NonOT7/xpack-toolkit (from REPO)
-== Release source: keweiya/xpack-toolkit (REPO_DEFAULT; 拿不到 curl 命令行)
+== Release source: NonOT7/xpack-toolkit (detected from the bootstrap URL)   # 抓到了
+== Release source: NonOT7/xpack-toolkit (from REPO)                        # 你显式指定了
+== Release source: keweiya/xpack-toolkit (REPO_DEFAULT; 拿不到 curl 命令行)  # 回落
 ```
+
+最后一种就是「fork 里有 v2.5.1，却装成上游 v2.5.0」的原因。**fork 必须改 `REPO_DEFAULT`**（见下），推断只当加分项。
 
 ## Fork 之后怎么用
 
@@ -255,3 +259,26 @@ amd64 的代码模式表允许一个站点挂多组候选 `((orig, patch), ...)`
 ## 安装失败
 
 按终端错误检查后，重跑同一条命令即可。备份与运行记录默认保存在 `/opt/1panel/crack/backup` 与 `/opt/1panel/unlock`。
+
+### 明明有新版，却装成旧版本
+
+先看开跑后那行 `== Release source: …`，它写着本次到底用了谁的 Release：
+
+| 输出 | 含义 | 处理 |
+| --- | --- | --- |
+| `… (from REPO)` | 你显式指定了仓库 | 自己确认 `REPO=` 有没有写错 |
+| `… (detected from the bootstrap URL)` | 从抓取地址推断成功 | 正常情况下这就是对的 |
+| `… (REPO_DEFAULT; 拿不到 curl 命令行)` | 推断没抓到，用了脚本内默认仓库 | 见下 |
+
+出现第三种、且你用的是 fork：说明脚本回落到了 `REPO_DEFAULT`（上游），所以装的是上游版本。两种改法，任选其一：
+
+```bash
+# ① 临时：显式指定仓库（sudo 不解析 VAR=value，必须用 env）
+curl -fsSL https://raw.githubusercontent.com/<你>/xpack-toolkit/main/unlock.sh \
+  | sudo env REPO=<你>/xpack-toolkit bash
+
+# ② 永久：在 fork 里把默认仓库改成自己（README 与 unlock.sh 一起改，单测会校验一致性）
+sed -i "s#keweiya/xpack-toolkit#<你>/xpack-toolkit#g" README.md unlock.sh
+```
+
+顺带确认 fork 那边真的发出了目标版本：`gh release list -R <你>/xpack-toolkit`，且该 tag 不是 draft / prerelease（脚本只认正式版）。
